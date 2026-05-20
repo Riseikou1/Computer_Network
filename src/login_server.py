@@ -1,5 +1,11 @@
 """Login server for the Computer Networks messenger design project.
 
+Professor requirement covered here:
+1. The login server stores online users.
+2. For each user, it stores ID, IP address, and port number.
+3. The user list is saved into a file.
+4. New clients register themselves and receive the list of other online users.
+
 Run:
     python3 login_server.py --host 0.0.0.0 --port 9000
 """
@@ -9,12 +15,38 @@ import argparse
 import json
 import socket
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Dict
 
-from protocol import build_message, receive_message
+from protocol import build_response, receive_request
 
 UserTable = Dict[str, Dict[str, str]]
+
+
+class Style:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    BLUE = "\033[34m"
+    MAGENTA = "\033[35m"
+    CYAN = "\033[36m"
+    RED = "\033[31m"
+
+
+def now() -> str:
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def box(title: str, lines: list[str]) -> str:
+    width = max([len(title)] + [len(line) for line in lines]) + 4
+    top = "╭" + "─" * width + "╮"
+    bottom = "╰" + "─" * width + "╯"
+    title_line = f"│  {title.center(width - 4)}  │"
+    body = [f"│  {line.ljust(width - 4)}  │" for line in lines]
+    return "\n".join([top, title_line, "├" + "─" * width + "┤", *body, bottom])
 
 
 class LoginServer:
@@ -45,53 +77,65 @@ class LoginServer:
             rows.append({"id": user_id, "ip": info["ip"], "port": int(info["port"])})
         return json.dumps(rows, indent=2)
 
+    def log(self, message: str, color: str = Style.CYAN) -> None:
+        print(f"{Style.DIM}[{now()}]{Style.RESET} {color}{message}{Style.RESET}")
+
     def handle_client(self, conn: socket.socket, addr) -> None:
         with conn:
             try:
-                command, headers, body = receive_message(conn)
+                method, path, headers, _body = receive_request(conn)
                 user_id = headers.get("User-ID", "").strip()
 
-                if command == "REGISTER":
+                if method == "REGISTER" and path == "/login":
                     listen_port = headers.get("Listen-Port", "").strip()
                     if not user_id or not listen_port.isdigit():
-                        response = build_message("ERROR", body="Missing User-ID or Listen-Port")
+                        response = build_response(400, "Bad Request", body="Missing User-ID or Listen-Port")
                     else:
                         client_ip = headers.get("IP", addr[0]).strip() or addr[0]
                         with self.lock:
                             self.users[user_id] = {"ip": client_ip, "port": listen_port}
                             self._save()
                             users_json = self._online_users_json(exclude_id=user_id)
-                        response = build_message("OK", {"Content-Type": "application/json"}, users_json)
+                        self.log(f"REGISTER {user_id} at {client_ip}:{listen_port}", Style.GREEN)
+                        response = build_response(200, "OK", {"Content-Type": "application/json"}, users_json)
 
-                elif command == "LIST":
+                elif method == "LIST" and path == "/users":
                     with self.lock:
                         users_json = self._online_users_json(exclude_id=user_id or None)
-                    response = build_message("OK", {"Content-Type": "application/json"}, users_json)
+                    self.log(f"LIST requested by {user_id or 'unknown'}", Style.BLUE)
+                    response = build_response(200, "OK", {"Content-Type": "application/json"}, users_json)
 
-                elif command == "UNREGISTER":
+                elif method == "UNREGISTER" and path == "/logout":
                     with self.lock:
-                        if user_id in self.users:
-                            del self.users[user_id]
-                            self._save()
-                    response = build_message("OK", body="unregistered")
+                        existed = self.users.pop(user_id, None) is not None
+                        self._save()
+                    if existed:
+                        self.log(f"UNREGISTER {user_id}", Style.YELLOW)
+                    response = build_response(200, "OK", body="unregistered")
 
                 else:
-                    response = build_message("ERROR", body=f"Unknown command: {command}")
+                    response = build_response(404, "Not Found", body=f"Unknown request: {method} {path}")
 
                 conn.sendall(response)
             except Exception as exc:
+                self.log(f"ERROR {exc}", Style.RED)
                 try:
-                    conn.sendall(build_message("ERROR", body=str(exc)))
+                    conn.sendall(build_response(500, "Server Error", body=str(exc)))
                 except OSError:
                     pass
 
     def serve_forever(self) -> None:
+        print(Style.CYAN + box("LOGIN SERVER", [
+            f"Listening : {self.host}:{self.port}",
+            f"User file : {self.db_path}",
+            "Purpose   : store online user ID/IP/port only",
+            "Messages  : sent directly between user clients",
+        ]) + Style.RESET)
+
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
             server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             server_sock.bind((self.host, self.port))
             server_sock.listen()
-            print(f"[LOGIN SERVER] Listening on {self.host}:{self.port}")
-            print(f"[LOGIN SERVER] User table: {self.db_path}")
             while True:
                 conn, addr = server_sock.accept()
                 threading.Thread(target=self.handle_client, args=(conn, addr), daemon=True).start()
