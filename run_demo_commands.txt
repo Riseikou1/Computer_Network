@@ -1,0 +1,20 @@
+Run these in separate terminals from the src folder:
+
+1) Login server
+python3 login_server.py --host 127.0.0.1 --port 9000
+
+2) Alice client
+python3 client.py --id alice --listen-port 5001 --server-port 9000
+
+3) Bob client
+python3 client.py --id bob --listen-port 5002 --server-port 9000
+
+Inside Alice:
+users
+invite bob
+send hello bob
+end
+quit
+
+Inside Bob:
+quit
