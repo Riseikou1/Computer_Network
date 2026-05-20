@@ -103,7 +103,10 @@ class MessengerClient:
             "users              refresh and show online users",
             "invite <user_id>   invite a user to the current messenger session",
             "session            show users in your current session",
-            "send <message>     send one HTTP-like message to all session users",
+            "send <message>     broadcast one HTTP-like message to all session users",
+            "sendto <user_id> <message>  send one HTTP-like message to one chosen user",
+            "send <user_id> <message>    shortcut for direct message if first word is online user",
+            "send <message> @<user_id>   shortcut for direct message if last word starts with @",
             "end                end current messenger session",
             "help               show this command menu",
             "exit / quit        unregister and terminate this process",
@@ -204,6 +207,11 @@ class MessengerClient:
             self.success(f"Invited {peer_id}. They were added to your session.")
 
     def send_session_message(self, text: str) -> None:
+        """Broadcast a message to every user in the current session.
+
+        This is the professor-required behavior: one user can send a message to
+        all users currently inside the messenger session.
+        """
         with self.lock:
             targets = sorted(self.session)
         if not targets:
@@ -214,7 +222,55 @@ class MessengerClient:
         for peer_id in targets:
             if self.send_to_peer(peer_id, "MSG", text):
                 delivered += 1
-        print(f"{Style.DIM}[{now()}]{Style.RESET} {tag('YOU   ', Style.GREEN)} sent to {delivered}/{len(targets)} session user(s): {text}")
+        print(f"{Style.DIM}[{now()}]{Style.RESET} {tag('YOU   ', Style.GREEN)} broadcast to {delivered}/{len(targets)} session user(s): {text}")
+
+    def send_direct_message(self, peer_id: str, text: str) -> None:
+        """Send a message to one chosen peer only.
+
+        This is extra convenience for demo clarity. The assignment requires
+        broadcasting to all session users, but direct messaging makes the UI less
+        confusing when there are several online users.
+        """
+        if not peer_id or not text:
+            self.error("Use: sendto <user_id> <message>")
+            return
+        if peer_id == self.user_id:
+            self.error("Sending a message to yourself is technically possible, but academically cursed.")
+            return
+        if self.send_to_peer(peer_id, "MSG", text):
+            print(f"{Style.DIM}[{now()}]{Style.RESET} {tag('YOU   ', Style.GREEN)} sent directly to {peer_id}: {text}")
+
+    def parse_send_command(self, rest: str) -> None:
+        """Handle flexible send syntax without breaking required broadcast syntax.
+
+        Supported:
+            send hello everyone            -> broadcast to current session
+            sendto bob hello               -> direct to bob
+            send bob hello                 -> direct to bob if bob is online/session user
+            send hello bob @bob            -> direct to bob, strips @bob from body
+
+        Plain names at the end are intentionally NOT treated as recipients,
+        because a sentence can naturally end with a name. Use @bob or sendto bob
+        for unambiguous direct sending. Humanity invented syntax for a reason,
+        occasionally.
+        """
+        self.refresh_users()
+        known_users = set(self.online_users.keys()) | set(self.session)
+        words = rest.split()
+
+        if len(words) >= 2 and words[0] in known_users:
+            peer_id = words[0]
+            text = " ".join(words[1:]).strip()
+            self.send_direct_message(peer_id, text)
+            return
+
+        if len(words) >= 2 and words[-1].startswith("@"):
+            peer_id = words[-1][1:]
+            text = " ".join(words[:-1]).strip()
+            self.send_direct_message(peer_id, text)
+            return
+
+        self.send_session_message(rest)
 
     def end_session(self) -> None:
         with self.lock:
@@ -263,7 +319,8 @@ class MessengerClient:
                     conn.sendall(build_response(200, "OK", body="invite accepted"))
 
                 elif method == "MSG":
-                    print(f"\n{Style.DIM}[{now()}]{Style.RESET} {tag(sender[:6].ljust(6), Style.MAGENTA)} {body}")
+                    to_user = headers.get("To", self.user_id)
+                    print(f"\n{Style.DIM}[{now()}]{Style.RESET} {tag(sender[:6].ljust(6), Style.MAGENTA)} → {to_user}: {body}")
                     conn.sendall(build_response(200, "OK", body="message delivered"))
 
                 elif method == "END":
@@ -308,7 +365,10 @@ class MessengerClient:
             elif command == "session":
                 self.print_session()
             elif command == "send" and rest:
-                self.send_session_message(rest)
+                self.parse_send_command(rest)
+            elif command == "sendto" and rest:
+                peer_id, _, message = rest.partition(" ")
+                self.send_direct_message(peer_id.strip(), message.strip())
             elif command == "end":
                 self.end_session()
             elif command == "help":
