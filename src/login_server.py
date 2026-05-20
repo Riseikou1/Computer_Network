@@ -50,14 +50,22 @@ def box(title: str, lines: list[str]) -> str:
 
 
 class LoginServer:
-    def __init__(self, host: str, port: int, db_path: str):
+    def __init__(self, host: str, port: int, db_path: str, keep_old_users: bool = False):
         self.host = host
         self.port = port
         self.db_path = Path(db_path)
         self.users: UserTable = {}
         self.lock = threading.Lock()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._load()
+
+        # Important: the file stores CURRENTLY online users.
+        # If the server restarts, old clients are no longer guaranteed to be online,
+        # so we clear stale entries by default. This prevents ghosts like bob/temuujin
+        # appearing before they actually run their client.
+        if keep_old_users:
+            self._load()
+        else:
+            self._save()
 
     def _load(self) -> None:
         if self.db_path.exists():
@@ -146,8 +154,13 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=9000)
     parser.add_argument("--db", default="../data/online_users.json")
+    parser.add_argument(
+        "--keep-old-users",
+        action="store_true",
+        help="Load users from the previous online-users file. Usually do NOT use this for demo/testing.",
+    )
     args = parser.parse_args()
-    LoginServer(args.host, args.port, args.db).serve_forever()
+    LoginServer(args.host, args.port, args.db, keep_old_users=args.keep_old_users).serve_forever()
 
 
 if __name__ == "__main__":

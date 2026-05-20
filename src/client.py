@@ -128,7 +128,10 @@ class MessengerClient:
         if status != 200:
             raise RuntimeError(f"login failed: {status} {reason} {body}")
         self.online_users = {row["id"]: row for row in json.loads(body)}
+        with self.lock:
+            self.session.clear()
         self.success(f"Logged in as {self.user_id} at {self.public_ip()}:{self.listen_port}")
+        self.system("Current messenger session starts empty. Online users are only candidates to invite.")
 
     def unregister(self) -> None:
         try:
@@ -149,7 +152,8 @@ class MessengerClient:
 
     def print_users(self) -> None:
         self.refresh_users()
-        print("\n" + tag("ONLINE USERS", Style.BLUE))
+        print("\n" + tag("ONLINE USERS FROM LOGIN SERVER", Style.BLUE))
+        print(Style.DIM + "  These users are only available to invite. They are NOT in your session yet." + Style.RESET)
         print(line())
         if not self.online_users:
             print("  nobody else online. tragic, but technically correct.")
@@ -226,7 +230,8 @@ class MessengerClient:
         print("\n" + tag("CURRENT SESSION", Style.YELLOW))
         print(line())
         if not users:
-            print("  empty. Invite someone before sending messages.")
+            print("  empty. Nobody is in this chat session yet.")
+            print("  Use: invite <user_id>")
         else:
             for user_id in users:
                 print(f"  • {user_id}")
@@ -281,6 +286,7 @@ class MessengerClient:
         self.print_welcome()
         self.print_help()
         self.print_users()
+        self.print_session()
 
         while self.running:
             try:
